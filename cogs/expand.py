@@ -261,7 +261,8 @@ class LinkExpander(commands.Cog):
             url = f"https://www.reddit.com/{reddit_match.group('short_id')}"
             reddit_request = f"https://www.reddit.com/{reddit_match.group('short_id')}.json"
         else:
-            reddit_request = f"https://www.reddit.com/{reddit_match.group('post_id')}.json"
+            url = url.partition("?")[0]
+            reddit_request = f"{url}.json"
 
         try:
             await ctx.typing()
