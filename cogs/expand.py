@@ -1,3 +1,4 @@
+from discord.ext.commands.help import Paginator
 import httpx
 import aiohttp
 import asyncio
@@ -141,11 +142,14 @@ class LinkExpander(commands.Cog):
                 }
         api_url = "https://api.twitter.com/2/tweets/{}"
         file_list = []
+        errors = Paginator()
         async with self.session.get(url=api_url.format(match.group('post_id')), headers=self.twitter_header, params=params) as response:
             if response.status < 400:
                 tweet = await response.json()            
-                referenced = tweet['data'].get("referenced_tweets")
-                text = tweet['data'].get('text', "No Text")
+                for error in tweet.get('errors', []):
+                    errors.add_line(error.get('detail'))
+                referenced = tweet.get('data', {}).get("referenced_tweets")
+                text = tweet.get('data', {}).get('text', "No Text")
                 includes = tweet.get('includes', [])
                 if includes:
                     users = includes.get("users", [])
@@ -171,7 +175,7 @@ class LinkExpander(commands.Cog):
                         media = []
                 videos_extracted = False
                 for m in media:
-                    if m.get('type') == 'video':
+                    if m.get('type') == 'video' or m.get('type') == "animated_gif":
                         if videos_extracted:
                             continue
                         with YoutubeDL({'format': 'best'}) as ydl:
@@ -182,7 +186,7 @@ class LinkExpander(commands.Cog):
                             else:
                                 entries = [result]
                             for entry in entries:
-                                best_format = next(iter(sorted(entry.get('formats'),key=lambda v: v.get('width') * v.get('height'), reverse=True)), None)
+                                best_format = next(iter(sorted(entry.get('formats'),key=lambda v: v.get('width', 0) * v.get('height', 0), reverse=True)), None)
                                 filename = f"{entry.get('id')}.{best_format.get('ext')}"
                                 if not best_format:
                                     continue
@@ -197,23 +201,6 @@ class LinkExpander(commands.Cog):
                                     return await ctx.send(f"The video was too big for reupload ({round(file_size/(1024 * 1024), 2)} MB)")
                                 file_list.append(discord.File(f'export/{filename}', filename=filename, spoiler=is_spoiler))
                         videos_extracted = True
-                    elif m.get('type') == 'animated_gif':
-                        with YoutubeDL({'format': 'best'}) as ydl:
-                            extract = partial(ydl.extract_info, link, download=False)
-                            result = await self.bot.loop.run_in_executor(None, extract)
-                            gif_url = result.get('formats')[0].get('url')
-                            async with self.session.get(gif_url) as gif:
-                                filename = gif_url.split('/')[-1]
-                                content_length = gif.headers.get('Content-Length')
-                                file_limit = 8388608
-                                if ctx.guild:
-                                    file_limit = ctx.guild.filesize_limit
-                                if content_length and int(content_length) > file_limit:
-                                    continue
-                                buffer = io.BytesIO(await gif.read())
-                                buffer.seek(0)
-                                file_list.append(discord.File(fp=buffer, filename=filename, spoiler=is_spoiler))
-                                
                     else:
                         async with self.session.get(url=f"{m.get('url')}?name=orig") as img:
                             filename = m.get('url').split('/')[-1]
@@ -227,6 +214,10 @@ class LinkExpander(commands.Cog):
                                 buffer = io.BytesIO(await img.read())
                                 buffer.seek(0)
                                 file_list.append(discord.File(fp=buffer, filename=filename, spoiler=is_spoiler))
+                if len(errors.pages) > 0:
+                    for page in errors.pages:
+                        await ctx.send(page)
+                    return
                 if len(file_list) == 0:
                     return await ctx.send("Sorry no images found in that Tweet")
                 embed.title =f"Extracted {len(file_list)} images/videos"
@@ -285,26 +276,12 @@ class LinkExpander(commands.Cog):
                         
             )
         video_url = post_data['url']
-        with YoutubeDL({'format': 'bestvideo', 'quiet': True}) as ytdl_v, YoutubeDL({'format': 'bestaudio', 'quiet': True}) as ytdl_a:
-            extract_video = partial(ytdl_v.extract_info, video_url, download=False)
-            extract_audio = partial(ytdl_a.extract_info, video_url, download=False)
-            results = await asyncio.gather(
-                    self.bot.loop.run_in_executor(None, extract_video),
-                    self.bot.loop.run_in_executor(None, extract_audio),
-                    return_exceptions=True
-                    )
+        with YoutubeDL({'quiet': True, 'outtmpl': 'export/%(id)s.%(ext)s'}) as ytdl:
+            extract_video = partial(ytdl.extract_info, video_url, download=True)
+            result = await self.bot.loop.run_in_executor(None, extract_video)
         
-        results = list(filterfalse(lambda r: isinstance(r, DownloadError), results))
-        if len(results) == 0:
-            return await ctx.send("No video found please check if this link contains a video file (not a gif) preferably use the v.redd.it link")
-        filename = f"{results[0].get('id')}.{results[0].get('ext')}"
-        if len(results) == 1:
-            proc = await asyncio.create_subprocess_exec(f"ffmpeg", "-hide_banner", "-loglevel" , "error","-i",  results[0].get('url'), '-c', 'copy', '-y', f'export/{filename}')
-        else:
-            proc = await asyncio.create_subprocess_exec(f"ffmpeg", "-hide_banner", "-loglevel" , "error","-i",  results[0].get('url'), '-i', results[1].get('url'),  '-c', 'copy', '-y', f'export/{filename}')
-        result, err = await proc.communicate()
+        filename = f"{result.get('id')}.{result.get('ext')}"
         file_size = os.path.getsize(filename=f'export/{filename}')
-        
         file_limit = 8388608
         if ctx.guild:
             file_limit = ctx.guild.filesize_limit
