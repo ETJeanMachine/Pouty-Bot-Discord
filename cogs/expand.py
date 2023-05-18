@@ -18,6 +18,7 @@ from yt_dlp import YoutubeDL, DownloadError
 from typing import Optional
 
 spoiler_regex = re.compile(r"\|\|\s?(?P<link>.+?)\s?\|\|")
+DEFAULT_FILE_LIMIT = 8388608
 class SpoilerLinkConverter(commands.Converter):
     async def convert(self, ctx, argument):
         if (match := spoiler_regex.search(argument)):
@@ -98,7 +99,7 @@ class LinkExpander(commands.Cog):
                 async with self.session.get(img_url, headers=self.pixiv_headers) as img:
                     if img.status < 400:
                         content_length = img.headers.get('Content-Length')
-                        file_limit = 8388608
+                        file_limit = DEFAULT_FILE_LIMIT
                         if ctx.guild:
                             file_limit = ctx.guild.filesize_limit
                         if content_length:
@@ -136,7 +137,7 @@ class LinkExpander(commands.Cog):
             self.logger.exception("error during typing")
         params = {
                 "expansions": "attachments.media_keys,author_id,referenced_tweets.id",
-                "media.fields" : "type,url",
+                "media.fields" : "type,url,variants",
                 "user.fields" : "profile_image_url,username",
                 "tweet.fields": "attachments"
                 }
@@ -178,7 +179,7 @@ class LinkExpander(commands.Cog):
                     if m.get('type') == 'video' or m.get('type') == "animated_gif":
                         if videos_extracted:
                             continue
-                        with YoutubeDL({'format': 'best'}) as ydl:
+                        with YoutubeDL({'format': 'best', 'cookiefile': self.twitter_settings.get('cookiefile')}) as ydl:
                             extract = partial(ydl.extract_info, link, download=False)
                             result = await self.bot.loop.run_in_executor(None, extract)
                             if result.get("playlist_count"):
@@ -193,7 +194,7 @@ class LinkExpander(commands.Cog):
                                 proc = await asyncio.create_subprocess_exec(f"ffmpeg", "-hide_banner", "-loglevel" , "error", "-i",  best_format.get('url'), '-c', 'copy', '-y', f'export/{filename}')
                                 result, err = await proc.communicate()
                                 file_size = os.path.getsize(filename=f'export/{filename}')
-                                file_limit = 8388608
+                                file_limit = DEFAULT_FILE_LIMIT
                                 if ctx.guild:
                                     file_limit = ctx.guild.filesize_limit
                                 if file_size > file_limit:
@@ -206,7 +207,7 @@ class LinkExpander(commands.Cog):
                             filename = m.get('url').split('/')[-1]
                             if img.status < 400:
                                 content_length = img.headers.get('Content-Length')
-                                file_limit = 8388608
+                                file_limit = DEFAULT_FILE_LIMIT
                                 if ctx.guild:
                                     file_limit = ctx.guild.filesize_limit
                                 if content_length and int(content_length) > file_limit:
@@ -282,7 +283,7 @@ class LinkExpander(commands.Cog):
         
         filename = f"{result.get('id')}.{result.get('ext')}"
         file_size = os.path.getsize(filename=f'export/{filename}')
-        file_limit = 8388608
+        file_limit = DEFAULT_FILE_LIMIT
         if ctx.guild:
             file_limit = ctx.guild.filesize_limit
         if file_size > file_limit:
