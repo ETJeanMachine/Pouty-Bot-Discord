@@ -116,45 +116,57 @@ class Roles(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.file_path = 'data/roles.json'
-        if os.path.exists(self.file_path):
-            with open(self.file_path) as f:
-                self.settable_roles = json.load(fp=f)
-        else:
-            self.settable_roles = []
-            self.save_roles_to_file()
         self.lockdown = False
 
     async def cog_load(self):
         self.bot.loop.create_task(self.create_role_table())
+
     async def create_role_table(self):
         async with self.bot.db.acquire() as con:
-            await con.execute("""
-                CREATE TABLE IF NOT EXISTS role_info(
-                    role_id BIGINT PRIMARY KEY,
-                    description TEXT,
-                    pingable boolean DEFAULT false
-                    ) """)
-            await con.execute("""
+            async with con.transaction():
+                await con.execute("""
+                    CREATE TABLE IF NOT EXISTS role_info(
+                        role_id BIGINT PRIMARY KEY,
+                        description TEXT,
+                        pingable boolean DEFAULT false
+                        ) """)
+                await con.execute("""
+                    ALTER TABLE role_info
+                    ADD COLUMN IF NOT EXISTS pingable boolean DEFAULT false;
+                """)
+                await con.execute("""
                 ALTER TABLE role_info
-                ADD COLUMN IF NOT EXISTS pingable boolean DEFAULT false
-            """)
+                ADD COLUMN IF NOT EXISTS assignable boolean DEFAULT false;
+                """)
+                await con.execute("""
+                ALTER TABLE role_info
+                ADD COLUMN IF NOT EXISTS guild_id BIGINT;
+                """)
+
+    async def _fetch_assignable_roles(self, ctx: commands.Context):
+        role_ids = await self.bot.db.fetch("SELECT role_id FROM role_info WHERE guild_id = $1 AND assignable = true", ctx.guild.id)
+        roles = []
+        for record in role_ids:
+            if role := ctx.guild.get_role(record["role_id"]):
+                roles.append(role)
+        return roles
 
     async def fetch_role_info(self, role_id):
         async with self.bot.db.acquire() as con:
             statement = await con.prepare("""
-                SELECT description, pingable from role_info
+                SELECT description, pingable, assignable from role_info
                 WHERE role_id = $1
             """)
             return await statement.fetchrow(role_id)
 
-    async def create_role_description(self, role_id, desc):
+    async def create_role_description(self, role_id, desc, guild):
         async with self.bot.db.acquire() as con:
             statement = await con.prepare("""
-                INSERT INTO role_info VALUES
-                ($1, $2)
+                INSERT INTO role_info (role_id, description, guild_id) VALUES
+                ($1, $2, $3)
                 ON CONFLICT (role_id) DO UPDATE SET description = EXCLUDED.description 
             """)
-            await statement.fetch(role_id, desc)
+            await statement.fetch(role_id, desc, guild.id)
 
     @checks.is_owner_or_moderator()
     @commands.command()
@@ -171,21 +183,14 @@ class Roles(commands.Cog):
             self.lockdown = False
             await ctx.send("lockdown disabled")
 
-    def save_roles_to_file(self):
-        with open('data/roles.json', 'w') as file:
-            json.dump(self.settable_roles, file)
-
     @commands.guild_only()
     @commands.command(name="iam")
     async def assign_role(self, ctx, * , role: CustomRoleConverter):
         """
         assigns you a role
         """
-        settable_role = find(lambda r: r.id in self.settable_roles, ctx.guild.roles)
-        if role == settable_role and self.lockdown:
-            await ctx.send("Server on lockdown due to high amount of people joining try again in a day or two")
-            return
-        if role.position > settable_role.position:
+        settable_role = await self._fetch_assignable_roles(ctx)
+        if role not in settable_role:
             if ctx.channel.name != "have-you-read-the-rules":
                 await ctx.send("can't give you that role")
             return
@@ -204,8 +209,8 @@ class Roles(commands.Cog):
     @commands.guild_only()
     async def remove_role(self, ctx, *, role: CustomRoleConverter):
         """removes a role from you"""
-        settable_role = find(lambda r: r.id in self.settable_roles, ctx.guild.roles)
-        if role.position > settable_role.position:
+        settable_role = await self._fetch_assignable_roles(ctx)
+        if not settable_role:
             await ctx.send("can't remove that role")
             return
         try:
@@ -219,28 +224,32 @@ class Roles(commands.Cog):
             await ctx.send("You either don't have that role or I am not allowed to remove it")
 
     @commands.command(name="assignable_roles", aliases=["asroles", "icanbe"])
-    @channel_only("bot-shenanigans",191536772352573440,390617633147453444)
+    @channel_only("bot-shenanigans",191536772352573440,390617633147453444, 208765039727869954)
     @commands.guild_only()
     async def get_assignable_roles(self, ctx):
         """
         Creates an interactive menu of assignable roles which you can use to assign or remove roles from yourself
         \N{WHITE HEAVY CHECK MARK} indicates you already have that role.
         """
-        settable_role = find(lambda r: r.id in self.settable_roles, ctx.guild.roles)
-        assignable_roles = [r for r in ctx.guild.roles if r.position <= settable_role.position]
-        assignable_roles.remove(ctx.guild.default_role)
-        role_menu = RoleMenu(assignable_roles, ctx, timeout=180)
-        await role_menu.start(ctx)
+        assignable_roles = await self._fetch_assignable_roles(ctx)
+        if assignable_roles:
+            role_menu = RoleMenu(assignable_roles, ctx, timeout=180)
+            await role_menu.start(ctx)
+        else:
+            await ctx.send("No roles are assignable for you")
 
 
 
     @commands.command()
     @commands.guild_only()
-    async def roleinfo(self, ctx, * ,role: typing.Optional[CustomRoleConverter]):
+    async def roleinfo(self, ctx: commands.Context, * ,role: typing.Optional[CustomRoleConverter]):
         """shows information about the server roles or a certain role"""
         server = ctx.message.guild
         roles = server.roles
         embed = discord.Embed()
+        command_invoke_str = ctx.message.content.removeprefix(f"{ctx.clean_prefix}{ctx.invoked_with}")
+        if command_invoke_str and not role:
+            return await ctx.send("Role not found.")
         if not role:
             for role in roles:
                 if role.name == "@everyone":
@@ -260,6 +269,7 @@ class Roles(commands.Cog):
             if info:
                 embed.description = info.get('description', '\u200b')
                 embed.add_field(name='pingable', value='yes' if info.get('pingable', False) else 'no')
+                embed.add_field(name='assignable', value="yes" if info.get('assignable', False) else 'no')
         await ctx.send(embed=embed)
 
     @commands.has_permissions(manage_roles=True)
@@ -277,7 +287,7 @@ class Roles(commands.Cog):
         """
         set the description of a certain role
         """
-        await self.create_role_description(role.id, description)
+        await self.create_role_description(role.id, description, ctx.guild)
         return await ctx.send("Role description set.")
 
 
@@ -319,48 +329,61 @@ class Roles(commands.Cog):
                 return
             new_role = await server.create_role(name=role_name, colour=set_colour)
             ret = await self.bot.db.execute("""
-            INSERT INTO role_info (role_id, pingable) VALUES ($1, $2)
+            INSERT INTO role_info (role_id, pingable, guild_id) VALUES ($1, $2, $3)
             ON CONFLICT (role_id) DO 
                 UPDATE SET pingable = $2
-            """, new_role.id, mentionable)
+            """, new_role.id, mentionable, ctx.guild.id)
             await ctx.send("role `{}` created".format(new_role.name))
         except discord.Forbidden:
             await ctx.send("Sorry I don't have the permission add a role")
+
+    @roles.command(name="remove")
+    @commands.has_permissions(manage_roles=True)
+    @commands.guild_only()
+    async def _remove_role(self, ctx, role: discord.Role):
+        """
+        Remove a role from the database and the server
+        """
+        await ctx.bot.db.execute("""
+        DELETE FROM role_info WHERE role_id = $1
+        """, role.id)
+        try:
+            await role.delete()
+            await ctx.message.add_reaction("\N{WHITE HEAVY CHECK MARK}")
+        except discord.Forbidden:
+            await ctx.send("Sorry, I don't have the permission to delete that role")
 
     @roles.command(name="mentionable", aliases=["pingable"])  
     @commands.has_permissions(manage_roles=True)
     @commands.guild_only()
     async def _set_role_pingable(self, ctx, role: discord.Role, pingable: bool):
         """
-        set wether a role is pingable or for users 
+        set whether a role is pingable or for users 
         """
         ret = await self.bot.db.execute("""
-        INSERT INTO role_info (role_id, pingable) VALUES ($1, $2)
+        INSERT INTO role_info (role_id, pingable, guild_id) VALUES ($1, $2, $3)
         ON CONFLICT (role_id) DO 
             UPDATE SET pingable = $2
-        """, role.id, pingable)
-        print(ret)
+        """, role.id, pingable, ctx.guild.id)
         await ctx.send(f"role updated to {'pingable' if pingable else 'unpingable'}")
-        
 
-
-    @roles.command(name="remove")
+    @roles.command(name="assignable")
     @commands.has_permissions(manage_roles=True)
     @commands.guild_only()
-    async def _remove_role(self, ctx, role_name: str):
+    async def _set_role_assignable(self, ctx: commands.Context, role: discord.Role, assignable: bool):
         """
-        remove a role the bot can edit
+        set whether a role should be self assignable
         """
-        try:
-            server = ctx.message.guild
-            role = find(lambda r: r.name == role_name, server.roles)
-            if not role:
-                await ctx.send('role `{}` not found'.format(role_name))
-                return
-            await server.delete_role(role)
-            await ctx.send('role `{}` removed'.format(role_name))
-        except discord.Forbidden:
-            await ctx.send("Sorry I don't have the permission to remove that role")
+        ret = await self.bot.db.execute("""
+        INSERT INTO role_info (role_id, assignable, guild_id) VALUES ($1, $2, $3)
+        ON CONFLICT (role_id) DO 
+            UPDATE SET assignable = $2
+        """, role.id, assignable, ctx.guild.id)
+        await ctx.send(f"role updated to {'self-assignable' if assignable else 'not self-assignable'}")
+
+
+        
+
 
     @commands.command(aliases=["color","colour"])
     @commands.guild_only()

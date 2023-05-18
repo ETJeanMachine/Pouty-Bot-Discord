@@ -84,8 +84,6 @@ class BotHelpView(views.PaginatedView):
         self.add_item(self.select)
         for child in self.children:
             child.row = 2
-            print(child)
-            print(isinstance(child, discord.ui.Button))
         await super().start(ctx)
 
     async def show_page(self, page_number: int):
@@ -215,17 +213,24 @@ class Default(commands.Cog):
 
     async def cog_load(self):
         await self.bot.wait_until_ready()
+        await self.create_loaded_cogs_table()
         await self.load_cogs()
 
+    async def create_loaded_cogs_table(self):
+        await self.bot.db.execute("""
+        CREATE TABLE IF NOT EXISTS cogs (
+            module TEXT NOT NULL PRIMARY KEY
+        )
+        """)
     async def load_cogs(self):
         if hasattr(self.bot, 'extensions_loaded'):
             return
-        init_extensions = self.data_io.load_json("initial_cogs")
+        init_extensions = [ext["module"] for ext in await self.bot.db.fetch("""SELECT module FROM cogs""")]
         for extension in init_extensions:
             try:
                 await self.bot.load_extension(extension)
             except Exception as e:
-                print('Failed to load extension {}\n{}: {}'.format(extension, type(e).__name__, e))
+                self.logger.exception('Failed to load extension: %s', e)
                 continue
         self.bot.extensions_loaded = True
 
@@ -248,7 +253,7 @@ class Default(commands.Cog):
     async def on_message(self, message: discord.Message):
         if not message.guild and not message.flags.ephemeral:
             user = message.author
-            self.dm_logger.info(f"{user.name}#{user.discriminator}({user.id}) message: {message.content}")
+            self.dm_logger.info(f"{user}({user.id}) message: {message.content}")
 
     async def on_command_error(self, ctx, error):
         if ctx.command and ctx.command.has_error_handler():
@@ -316,7 +321,7 @@ class Default(commands.Cog):
                                      if dc["server"] == current_guild.id]
                 if ctx.command.name in disabled_commands:
                     raise DisabledCommandException(
-                        f"{ctx.author.name}#{ctx.author.discriminator} used disabled command")
+                        f"{ctx.author} used disabled command")
             else:
                 for guild_id in guilds_with_disabled_command:
                     guild = self.bot.get_guild(guild_id)
@@ -329,7 +334,7 @@ class Default(commands.Cog):
                                          if dc["server"] == guild.id]
                     if ctx.command.name in disabled_commands:
                         raise DisabledCommandException(
-                            f"{ctx.author.name}#{ctx.author.discriminator} used disabled command")
+                            f"{ctx.author} used disabled command")
         return True
 
     async def check_for_black_list_user(self, ctx):
@@ -337,7 +342,7 @@ class Default(commands.Cog):
         if owner_cog:
             if ctx.author.id in owner_cog.global_ignores:
                 bl_user = ctx.author
-                raise BlackListedException(f"blacklisted user: {bl_user.name}#{bl_user.discriminator} ({bl_user.id}) "
+                raise BlackListedException(f"blacklisted user: {bl_user} ({bl_user.id}) "
                                            f"tried to use command")
         return True
 
