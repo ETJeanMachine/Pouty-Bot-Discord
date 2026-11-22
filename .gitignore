@@ -1,6 +1,10 @@
+# editor configs
+.zed/
+.idea/
+
+# proj data
 data/danbooru/subs/*
 data/youtube
-.idea/
 cogs/__pycache__/
 cogs/utils/__pycache__/
 data/credentials.json
@@ -14,6 +18,9 @@ discord.log
 tags
 wuxia_feed/
 config
+
+# python stuff
 .venv/
+
 # eliza note - lmfao. macos momento. :p
 .DS_Store
