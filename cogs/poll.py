@@ -10,6 +10,10 @@ from uuid import UUID, uuid4
 
 import asyncpg
 import discord
+import matplotlib
+
+matplotlib.use("Agg") # eliza note: this is a macos silly goofy thing where it defaults to the GUI matplotlib
+                              # i don't think it'll do shit on your VPS lmao bc it already runs in headless mode.
 import matplotlib.pyplot as plt
 from discord import app_commands
 from discord.errors import HTTPException
