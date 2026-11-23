@@ -14,17 +14,6 @@ import matplotlib.pyplot as plt
 from discord import app_commands
 from discord.errors import HTTPException
 from discord.ext import commands, tasks
-from discord import app_commands
-import discord
-from typing import Any, Dict, Literal, Optional, List, Set, Union
-import re
-from uuid import UUID, uuid4
-from dataclasses import dataclass, field
-import itertools
-import asyncpg
-import matplotlib.pyplot as plt
-import io
-import logging
 
 timing_regex = re.compile(
     r"^(?P<days>\d+\s?d(?:ay)?s?)?\s?(?P<hours>\d+\s?h(?:our)?s?)?\s?(?P<minutes>\d+\s?m(?:in(?:ute)?s?)?)?\s?(?P<seconds>\d+\s?s(?:econd)?s?)?"
