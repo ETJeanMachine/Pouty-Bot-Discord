@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from discord import app_commands
 from discord.errors import HTTPException
 from discord.ext import commands, tasks
+from matplotlib.ticker import MaxNLocator
 
 timing_regex = re.compile(
     r"^(?P<days>\d+\s?d(?:ay)?s?)?\s?(?P<hours>\d+\s?h(?:our)?s?)?\s?(?P<minutes>\d+\s?m(?:in(?:ute)?s?)?)?\s?(?P<seconds>\d+\s?s(?:econd)?s?)?"
@@ -233,36 +234,49 @@ class PollData:
                 [(uuid4(), vote.user.id, vote.option.id, self.id) for vote in votes],
             )
 
+    def create_poll_chart(self, results: list[tuple[str, int]]):
+        fig, ax = plt.subplots()
+        labels = [label for label, _ in results]
+        counts = [count for _, count in results]
+        # pie chart for single-polls
+        if self.type == "single":
+            total = sum(counts)
+            max_count = max(counts)
+            winners = [0.1 if count == max_count else 0.0 for count in counts]
+            ax.pie(
+                [count / total for count in counts],
+                labels=labels,
+                explode=winners,
+                autopct="%1.1f%%",
+            )
+        # bar chart for multi-polls
+        elif self.type == "multi":
+            ax.barh(labels, counts)
+            ax.invert_yaxis() # placing biggest number at the top
+            # disabling decimal ticks
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_title(self.title)
+        return fig
+
     async def finish(
         self,
-        db: Union[asyncpg.Pool, asyncpg.Connection],
-        interaction: Optional[discord.Interaction],
+        db: asyncpg.Pool | asyncpg.Connection,
+        interaction: discord.Interaction | None,
     ):
         embed = self.embed
         description = f"{self.description if self.description else ''}\nResults:\n"
         embed.clear_fields()
         embed.set_image(url="attachment://result.png")
-        labels = []
-        counts = []
+        results: list[tuple[str, int]] = []
         for option in self.options:
             count = self.get_vote_count(option)
             if count > 0:
-                labels.append(option.text)
-                counts.append(count)
-        if counts:
-            results = list(sorted(zip(counts, labels), reverse=True))
-            description += "\n".join(f"`{r[1]}: {r[0]}`" for r in results)
+                results.append((option.text, count))
+        if results:
+            results.sort(key=lambda r: r[1], reverse=True)
+            description += "\n".join(f"`{label}: {count}`" for label, count in results)
             embed.description = description
-            fig, ax = plt.subplots()
-            counts = [r[0] for r in results]
-            winners = [0.1 if c == max(counts) else 0.0 for c in counts]
-            ax.pie(
-                list(map(lambda c: c[0] / sum(counts), results)),
-                labels=[r[1] for r in results],
-                explode=winners,
-                autopct="%1.1f%%",
-            )
-            ax.set_title(self.title)
+            fig = self.create_poll_chart(results)
             buffer = io.BytesIO()
             fig.savefig(buffer, format="png")
             buffer.seek(0)
